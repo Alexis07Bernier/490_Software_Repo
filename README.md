@@ -2,12 +2,12 @@
 ## PuckSensorApp.m is Ali's previous code
 
 ## HockeyPuckFilter.m
-## How It Works
-### Load Sensor Data
+### How It Works
+#### Load Sensor Data
 * Reads accelerometer and gyroscope data from an Excel file.
 * Computes time step (Δ𝑡) for processing.
 
-### Initialize Filters
+#### Initialize Filters
 * Uses MadgwickAHRS to estimate quaternions.
 * Sets up Kalman filter parameters (state, covariance, noise matrices).
 * Process Data Using Madgwick + Kalman Filter
@@ -16,5 +16,5 @@
 * Removes gravity to get net motion acceleration.
 * Uses a Kalman filter to estimate velocity while reducing noise.
 
-### Plot Velocity Results
+#### Plot Velocity Results
 * Plots the estimated velocity components over time.
