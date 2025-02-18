@@ -1,22 +1,36 @@
 clc; clear; close all;
 
-%% Load Data from Excel
-filename = 'sensor_data.xlsx'; % Replace with actual file name
-data = readtable(filename);
+%Load .mat file
+data = load('iceimpact01.mat'); %this is one of the files from ALI
+timeVar = data.TimeVar; % Assuming timeVar is the variable name in .mat
 
-% Extract columns
-time = data.Time; % Time in seconds
-dt = mean(diff(time)); % Compute time step
+% Convert string times to duration (if stored as strings)
+if iscell(timeVar) % Check if stored as cell array (e.g., due to undefined values)
+    timeVar = timeVar(~strcmp(timeVar, 'undefined')); % Remove undefined
+    timeVar = duration(timeVar, 'InputFormat', 'hh:mm:ss.SSS'); % Convert to duration
+elseif isstring(timeVar) || ischar(timeVar) % If stored as string array
+    timeVar = duration(timeVar, 'InputFormat', 'hh:mm:ss.SSS');
+end
+
+% Convert to seconds
+time = seconds(timeVar); % Convert duration to seconds
+
+% Compute time step (dt)
+dt = mean(diff(time)); % Mean time difference between samples
+
+% Display dt
+disp(['Computed dt: ', num2str(dt), ' seconds']);
+
 
 % Accelerometer (m/s^2)
-accel_local = [data.AccelX, data.AccelY, data.AccelZ];
+accel_local = data.Accelerometer; %[data.AccelX, data.AccelY, data.AccelZ];
 
 % Gyroscope (rad/s)
-gyro = [data.GyroX, data.GyroY, data.GyroZ];
+gyro = data.Gyroscope; %[data.GyroX, data.GyroY, data.GyroZ];
 
 %% Initialize Madgwick Filter
 fs = 1/dt; % Sampling frequency
-madgwick = madgwickAHRS('SamplePeriod', dt, 'Beta', 0.1);
+madgwick = MadgwickAHRS('SamplePeriod', dt, 'Beta', 0.1);
 
 % Initialize quaternions
 num_samples = length(time);
@@ -43,7 +57,14 @@ for i = 1:num_samples
     quaternions(i, :) = q;
     
     % Convert acceleration to global frame
-    R = quat2rotm(q); % Convert quaternion to rotation matrix
+    %R = quat2rotm(q); 
+    %Need the quat2rotm function but not available on MATLAB online
+    %Implement it manually
+    R = [1 - 2*(q(3)^2 + q(4)^2),  2*(q(2)*q(3) - q(1)*q(4)),  2*(q(2)*q(4) + q(1)*q(3));
+     2*(q(2)*q(3) + q(1)*q(4)),  1 - 2*(q(2)^2 + q(4)^2),  2*(q(3)*q(4) - q(1)*q(2));
+     2*(q(2)*q(4) - q(1)*q(3)),  2*(q(3)*q(4) + q(1)*q(2)),  1 - 2*(q(2)^2 + q(3)^2)];
+    
+     % Convert quaternion to rotation matrix
     accel_global = (R * accel_local(i, :)')'; 
     
     % Remove gravity
