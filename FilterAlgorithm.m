@@ -1,7 +1,7 @@
 clc; clear; close all;
 
 %Load .mat file
-data = load('slap01.mat'); %this is one of the files from ALI
+data = load('snap01.mat'); %this is one of the files from ALI
 timeVar = data.TimeVar; % Assuming timeVar is the variable name in .mat
 
 % Convert to seconds
@@ -31,10 +31,10 @@ FinalGyro = (Gyro_processed - mean(Gyro_processed(1:100, :), "omitnan")) .* [1 -
 FinalMag = Mag_processed .* [1 -1 1];
 
 %% Initialize Madgwick Filter
-madgwick = MadgwickAHRS('SamplePeriod', 1/40, 'Beta', 0.1);
+madgwick = MadgwickAHRS('SamplePeriod', 1/400, 'Beta', 1);
 
 % Initialize quaternions
-num_samples = length(rawData);
+num_samples = size(rawData, 1);
 quaternions = repmat([1, 0, 0, 0], length(gyro), 1); %Allocate for quaternions
 
 %% Main Loop - Apply Filters
@@ -89,8 +89,8 @@ function velocityValue = estimateVelocity(madgwick_quat, accel, gyro, mag)
     
     if isempty(fuse)
         fuse = insfilterMARG;
-        fuse.IMUSampleRate = 40;
-        fuse.StateCovariance = 1e-9 * ones(22);
+        fuse.IMUSampleRate = 400;
+        fuse.StateCovariance = 1e-12 * ones(22);
     end
 
     % Set Kalman filter's orientation from Madgwick quaternion
