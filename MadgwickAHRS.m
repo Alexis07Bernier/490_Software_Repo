@@ -1,11 +1,4 @@
 classdef MadgwickAHRS < handle
-    %MADGWICKAHRS Implementation of Madgwick's IMU and AHRS algorithms
-    %
-    %   For more information see:
-    %   http://www.x-io.co.uk/node/8#open_source_ahrs_and_imu_algorithms
-    %
-    %   Date          Author          Notes
-    %   28/09/2011    SOH Madgwick    Initial release
     
         %% Public properties
         properties (Access = public)
