@@ -1,443 +1,496 @@
-#include <stdbool.h>
-#include <stdint.h>
-#include <string.h>
-
-#include "spi_driver.h"  // Replace with your SPI driver header
-#include <stdio.h>
-
-#include "nrf_delay.h"
+#include "sensors.h"
 #include "nrf_drv_spi.h"
-#include "Sensors.h"
-
+#include "nrf_delay.h"
 #include "nrf_log.h"
-#include "nrf_log_ctrl.h"
-#include "nrf_log_default_backends.h"
+#include "nrf_gpio.h"
 
-// Initialize SPI instances
-#define SPI_INSTANCE_1_ID 1 //  Accelerometer: ADXL314WBCPZ
-#define SPI_INSTANCE_2_ID 2 //  3-Axis Gyroscope + High Rate Z-Axis Gyroscope
-#define SPI_INSTANCE_3_ID 3 //  Magnetometer: MMC5983MA
+// SPI Instances
+static const nrf_drv_spi_t spi_adxl = NRF_DRV_SPI_INSTANCE(ADXL314_SPI_INSTANCE);
+static const nrf_drv_spi_t spi_mmc  = NRF_DRV_SPI_INSTANCE(MMC5983MA_SPI_INSTANCE);
+static const nrf_drv_spi_t spi_gyro = NRF_DRV_SPI_INSTANCE(ITG3701_SPI_INSTANCE);
 
-#define SPI_BUFSIZE  8 // Shared Buffer Size
-uint8_t spi_tx_buf[SPI_BUFSIZE];
-uint8_t spi_rx_buf[SPI_BUFSIZE];
+static bool spi_initialized = false;
 
-// Flag to indicate the transfer state
-static volatile bool spi_xfer_done = false;
-
-// Create a Handle for communications
-static const nrf_drv_spi_t m_spi_1 = NRF_DRV_SPI_INSTANCE(SPI_INSTANCE_1_ID);
-static const nrf_drv_spi_t m_spi_2 = NRF_DRV_SPI_INSTANCE(SPI_INSTANCE_2_ID);
-static const nrf_drv_spi_t m_spi_3 = NRF_DRV_SPI_INSTANCE(SPI_INSTANCE_3_ID);
-
-void spi_event_handler(nrf_drv_spi_evt_t const * p_event, void * p_context)
-{
-    spi_xfer_done = true;
+void configure_unconnected_pins(void) {
+    // Configure unconnected GPIO pins as inputs and enable internal pull-up resistors
+    nrf_gpio_cfg_input(3, NRF_GPIO_PIN_PULLUP);  // P0.03
+    nrf_gpio_cfg_input(9, NRF_GPIO_PIN_PULLUP);  // P0.09
+    nrf_gpio_cfg_input(10, NRF_GPIO_PIN_PULLUP); // P0.10
+    nrf_gpio_cfg_input(11, NRF_GPIO_PIN_PULLUP); // P0.11
+    nrf_gpio_cfg_input(12, NRF_GPIO_PIN_PULLUP); // P0.12
+    nrf_gpio_cfg_input(28, NRF_GPIO_PIN_PULLUP); // P0.28
+    nrf_gpio_cfg_input(29, NRF_GPIO_PIN_PULLUP); // P0.29
+    nrf_gpio_cfg_input(30, NRF_GPIO_PIN_PULLUP); // P0.30
+    nrf_gpio_cfg_input(31, NRF_GPIO_PIN_PULLUP); // P0.31
+    nrf_gpio_cfg_input(32, NRF_GPIO_PIN_PULLUP);  // P1.00
+    nrf_gpio_cfg_input(33, NRF_GPIO_PIN_PULLUP);  // P1.01
+    nrf_gpio_cfg_input(34, NRF_GPIO_PIN_PULLUP);  // P1.02
+    nrf_gpio_cfg_input(35, NRF_GPIO_PIN_PULLUP);  // P1.03
+    nrf_gpio_cfg_input(36, NRF_GPIO_PIN_PULLUP);  // P1.04
+    nrf_gpio_cfg_input(37, NRF_GPIO_PIN_PULLUP);  // P1.05
+    nrf_gpio_cfg_input(38, NRF_GPIO_PIN_PULLUP);  // P1.06
+    nrf_gpio_cfg_input(39, NRF_GPIO_PIN_PULLUP);  // P1.07
+    nrf_gpio_cfg_input(41, NRF_GPIO_PIN_PULLUP);  // P1.09
+    nrf_gpio_cfg_input(42, NRF_GPIO_PIN_PULLUP);  // P1.10
+    nrf_gpio_cfg_input(43, NRF_GPIO_PIN_PULLUP);  // P1.11
+    nrf_gpio_cfg_input(44, NRF_GPIO_PIN_PULLUP);  // P1.12
+    nrf_gpio_cfg_input(45, NRF_GPIO_PIN_PULLUP);  // P1.13
+    nrf_gpio_cfg_input(46, NRF_GPIO_PIN_PULLUP);  // P1.14
+    nrf_gpio_cfg_input(47, NRF_GPIO_PIN_PULLUP);  // P1.15
 }
 
-// Initialize the SPI
-void spi_1_init(void)
-{
-  nrf_drv_spi_config_t spi_config = NRF_DRV_SPI_DEFAULT_CONFIG;
+void sensors_init(void) {
+    if (spi_initialized) return;
 
-  spi_config.ss_pin     = SPI_CS1;
-  spi_config.miso_pin   = SPI_MISO_A;
-  spi_config.mosi_pin   = SPI_MOSI_A;
-  spi_config.sck_pin    = SPI_SCLK_A;
-  spi_config.frequency  = NRF_SPI_FREQ_4M;
-
-  APP_ERROR_CHECK(nrf_drv_spi_init(&m_spi_1, &spi_config, spi_event_handler, NULL));
-}
-
-void spi_2_init(void)
-{
-  nrf_drv_spi_config_t spi_config = NRF_DRV_SPI_DEFAULT_CONFIG;
-
-  spi_config.ss_pin     = SPI_CS2;
-  //spi_config.ss_pin     = SPI_CS3;
-  spi_config.miso_pin   = SPI_MISO_B;
-  spi_config.mosi_pin   = SPI_MOSI_B;
-  spi_config.sck_pin    = SPI_SCLK_B;
-  spi_config.frequency  = NRF_SPI_FREQ_4M;
-
-  APP_ERROR_CHECK(nrf_drv_spi_init(&m_spi_2, &spi_config, spi_event_handler, NULL));
-}
-
-void spi_3_init(void)
-{
-  nrf_drv_spi_config_t spi_config = NRF_DRV_SPI_DEFAULT_CONFIG;
-
-  spi_config.ss_pin     = SPI_CS4;
-  spi_config.miso_pin   = SPI_MISO_C;
-  spi_config.mosi_pin   = SPI_MOSI_C;
-  spi_config.sck_pin    = SPI_SCLK_C;
-  spi_config.frequency  = NRF_SPI_FREQ_4M;
-
-  APP_ERROR_CHECK(nrf_drv_spi_init(&m_spi_3, &spi_config, spi_event_handler, NULL));
-}
-
-
-/*
-----------------------ADXL314WBCPZ-RL-----------------------
------------------------ACCELEROMETER------------------------
-*/
-
-// Function to write a single byte to ADXL314
-void adxl314_write_register(uint8_t reg, uint8_t value) {
-  uint8_t data[2] = { (reg | ADXL314_SPI_WRITE), value };
-  spi_transfer(ADXL314_CS_PIN, data, 2, NULL, 0);
-}
-
-// Function to read a single byte from ADXL314
-uint8_t adxl314_read_register(uint8_t reg) {
-  uint8_t tx_data[2] = { (reg | ADXL314_SPI_READ), 0x00 };
-  uint8_t rx_data[2] = {0};
-
-  spi_transfer(ADXL314_CS_PIN, tx_data, 2, rx_data, 2);
-  return rx_data[1]; // Return received data
-}
-
-// Function to read acceleration data (X, Y, Z)
-void adxl314_read_accel(int16_t *x, int16_t *y, int16_t *z) {
-  uint8_t tx_data[7] = { (ADXL314_DATAX0_REG | ADXL314_SPI_READ | ADXL314_MULTI_BYTE), 0, 0, 0, 0, 0, 0 };
-  uint8_t rx_data[7] = {0};
-
-  spi_transfer(ADXL314_CS_PIN, tx_data, 7, rx_data, 7);
-
-  *x = (int16_t)((rx_data[2] << 8) | rx_data[1]);
-  *y = (int16_t)((rx_data[4] << 8) | rx_data[3]);
-  *z = (int16_t)((rx_data[6] << 8) | rx_data[5]);
-}
-
-// Function to initialize the ADXL314
-void adxl314_init() {
-  uint8_t dev_id = adxl314_read_register(ADXL314_DEVID_REG);
-  if (dev_id != 0xE5) {
-    printf("Error: Incorrect ADXL314 Device ID: 0x%X\n", dev_id);
-    return;
-  }
-
-  // Set power control (Enable measurement mode)
-  adxl314_write_register(ADXL314_POWER_CTL_REG, 0x08);
-
-  // Set data format: Full resolution, ±16g range
-  adxl314_write_register(ADXL314_DATA_FORMAT_REG, 0x0B);
-
-  printf("ADXL314 Initialized!\n");
-}
-
-
-/*
-------------------------ITG3701-------------------------
-----------------------3-AXIS GYRO-----------------------
-*/
-
-// Function to write a single byte to ITG3701's internal register
-bool itg3701_register_write(uint8_t register_address, uint8_t value) {
-  ret_code_t err_code;
-  uint8_t tx_buf[ITG3701_ADDRESS_LEN + 1];
-  
-  // Write the register address and data into transmit buffer
-  tx_buf[0] = register_address;
-  tx_buf[1] = value;
-  
-  // Set the flag to false to show the transmission is not yet completed
-  m_xfer_done = false;
-  
-  // Transmit the data over TWI Bus
-  err_code = nrf_drv_twi_tx(&m_twi, ITG3701_ADDRESS, tx_buf, ITG3701_ADDRESS_LEN + 1, false);
-  APP_ERROR_CHECK(err_code);
-  
-  // Wait until the transmission of the data is finished
-  while (m_xfer_done == false);
-  
-  // If there is no error then return true else return false
-  if (NRF_SUCCESS != err_code) {
-    return false;
-  }
-  
-  return true;
-}
-  
-// Function to read data from the ITG3701
-bool itg3701_register_read(uint8_t register_address, uint8_t *destination, uint8_t number_of_bytes) {
-  ret_code_t err_code;
-  
-  // Set the flag to false to show receiving is not yet completed
-  m_xfer_done = false;
-  
-  // Send the register address where we want to write the data
-  err_code = nrf_drv_twi_tx(&m_twi, ITG3701_ADDRESS, &register_address, 1, true);
-  APP_ERROR_CHECK(err_code);
-  
-  // Wait for the transmission to get completed
-  while (m_xfer_done == false);
-  
-  // If transmission was not successful, exit the function with false as return value
-  if (NRF_SUCCESS != err_code) {
-    return false;
-  }
+    // Configure Chip Select pins as outputs and set to high before transmission
+    nrf_gpio_cfg_output(ADXL314_CS_PIN);
+    nrf_gpio_pin_set(ADXL314_CS_PIN);
     
-  // Set the flag again so that we can read data from the ITG3701's internal register
-  m_xfer_done = false;
-  
-  // Receive the data from the ITG3701
-  err_code = nrf_drv_twi_rx(&m_twi, ITG3701_ADDRESS, destination, number_of_bytes);
-  APP_ERROR_CHECK(err_code);
-  
-  // Wait until the transmission is completed
-  while (m_xfer_done == false);
-  
-  // If data was successfully read, return true else return false
-  if (NRF_SUCCESS != err_code) {
-    return false;
-  }
-  
-  return true;
-}
-  
-// Function to verify the product ID
-bool itg3701_verify_product_id(void) {
-  uint8_t who_am_i; // Create a variable to hold the who_am_i value
-  
-  if (itg3701_register_read(ADDRESS_WHO_AM_I, &who_am_i, 1)) {
-    if (who_am_i != ITG3701_WHO_AM_I) {
-      return false;
+    nrf_gpio_cfg_output(MMC5983MA_CS_PIN);
+    nrf_gpio_pin_set(MMC5983MA_CS_PIN);
+
+    nrf_gpio_cfg_output(ITG3701_CS_PIN);
+    nrf_gpio_pin_set(ITG3701_CS_PIN);
+
+    nrf_gpio_cfg_output(ADIS16266_CS_PIN);
+    nrf_gpio_pin_set(ADIS16266_CS_PIN);
+
+    configure_unconnected_pins();
+
+    // Configure SPI for ADXL314 (Accelerometer)
+    nrf_drv_spi_config_t spi_config_adxl = {
+        .sck_pin      = 19, // P0.19  
+        .mosi_pin     = 26, // P0.26  
+        .miso_pin     = 27, // P0.27 
+        .ss_pin       = NRF_DRV_SPI_PIN_NOT_USED, // CS is manually controlled  
+        .irq_priority = 3,
+        .orc          = 0xFF, // Default over-read character  
+        .frequency    = NRF_DRV_SPI_FREQ_2M, // Set SPI speed to 2 MHz (>= 2 MHz required) 
+        .mode         = NRF_DRV_SPI_MODE_3, // CPOL = 1, CPHA = 1 (SPI Mode 3)  
+        .bit_order    = NRF_DRV_SPI_BIT_ORDER_MSB_FIRST,
+    };
+
+    // Configure SPI for MMC5983MA (Magnetometer)
+    nrf_drv_spi_config_t spi_config_mmc = {
+        .sck_pin      = 40, // P1.08 
+        .mosi_pin     = 21, // P0.21 
+        .miso_pin     = 23, // P0.23 
+        .ss_pin       = NRF_DRV_SPI_PIN_NOT_USED,  
+        .irq_priority = 3,
+        .orc          = 0xFF,  
+        .frequency    = NRF_DRV_SPI_FREQ_2M, // Set SPI speed to 2 MHz (max 10 MHz supported) 
+        .mode         = NRF_DRV_SPI_MODE_0, // CPOL = 0, CPHA = 0 (SPI Mode 0)  
+        .bit_order    = NRF_DRV_SPI_BIT_ORDER_MSB_FIRST,
+    };
+
+    // Configure SPI for ITG-3701 & ADIS16266 (Gyroscopes)
+    nrf_drv_spi_config_t spi_config_gyro = {
+        .sck_pin      = 1, // P0.01 
+        .mosi_pin     = 6, // P0.06
+        .miso_pin     = 7, // P0.07
+        .ss_pin       = NRF_DRV_SPI_PIN_NOT_USED,  
+        .irq_priority = 3,
+        .orc          = 0xFF,  
+        .frequency    = NRF_DRV_SPI_FREQ_2M, // Set SPI speed to 2 MHz (max 2.5 MHz supported for ADIS16266)
+        .mode         = NRF_DRV_SPI_MODE_3, // CPOL = 1, CPHA = 1, (SPI Mode 3)  
+        .bit_order    = NRF_DRV_SPI_BIT_ORDER_MSB_FIRST,
+    };
+
+    // Initialize SPI instances
+    if (nrf_drv_spi_init(&spi_adxl, &spi_config_adxl, NULL, NULL) == NRF_SUCCESS) {
+        NRF_LOG_INFO("SPI_A Initialized for ADXL314");
     } else {
-      return true;
+        NRF_LOG_ERROR("SPI_A Initialization Failed");
     }
-  } else {
-    return false;
-  }
-}
-  
-// Function to initialize the ITG3701
-bool itg3701_init(void) {
-  bool transfer_succeeded = true;
-  
-  // Check the ID to confirm that we are communicating with the right device
-  transfer_succeeded &= itg3701_verify_product_id();
-  
-  // Set the registers with the required values
-  (void)itg3701_register_write(ITG3701_PWR_MGMT_1, 0x00);
-  nrf_delay_ms(100);
-  (void)itg3701_register_write(ITG3701_PWR_MGMT_1, 0x01);
-  nrf_delay_ms(200);
-  
-  (void)itg3701_register_write(ITG3701_CONFIG, 0x03);
-  (void)itg3701_register_write(ITG3701_SMPLRT_DIV, 0x09);
-  uint8_t c;
-  //  (void)itg3701_register_read(ITG3701_GYRO_CONFIG, &c, 1);
-  while (itg3701_register_read(ITG3701_GYRO_CONFIG, &c, 1) == false) {
-    nrf_delay_ms(1);
-    transfer_succeeded = false;
-  }
-  transfer_succeeded = true;
-  (void)itg3701_register_write(ITG3701_GYRO_CONFIG, c & ~0x03);
-  (void)itg3701_register_write(ITG3701_GYRO_CONFIG, c & ~0x18);
-  (void)itg3701_register_write(ITG3701_GYRO_CONFIG, c | 0x18);
-  (void)itg3701_register_write(ITG3701_INT_PIN_CFG, 0x00);
-  (void)itg3701_register_write(ITG3701_INT_ENABLE, 0x01);
-  
-  return transfer_succeeded;
-}
-  
-  //// Function to initialize the ITG3701
-  //bool itg3701_init(void) {
-  //  bool transfer_succeeded = true;
-  //
-  //  // Check the ID to confirm that we are communicating with the right device
-  //  transfer_succeeded &= itg3701_verify_product_id();
-  //
-  //  // Set the registers with the required value
-  //  (void)itg3701_register_write(ITG3701_PWR_MGMT_1, 0x80);
-  //  nrf_delay_ms(100);
-  //  (void)itg3701_register_write(ITG3701_PWR_MGMT_1, 0x09);
-  //  (void)itg3701_register_write(ITG3701_CONFIG, 0x01);
-  //  (void)itg3701_register_write(ITG3701_SMPLRT_DIV, 0x00);
-  //  (void)itg3701_register_write(ITG3701_GYRO_CONFIG, 0x18);
-  //
-  //  return transfer_succeeded;
-  //}
-  
-  // Read the gyro values from the ITG3701's internal registers
-bool ITG3701_ReadGyro(uint8_t *p_gyro) {
-  uint8_t c;
-  bool ret = false;
-    
-  (void)(itg3701_register_read(ITG3701_INT_STATUS, &c, 1));
-    
-  if (itg3701_register_read(ITG3701_GYRO_OUT, p_gyro, 6) == true  && c == 0x01) {
-  //  if (itg3701_register_read(ITG3701_GYRO_OUT, buf, 6) == true) {
-    ret = true;
-  }
-  //    NRF_LOG_INFO("%d", *p_gyro);
-  return ret;
-}
-  
 
-/*
-------------------------MMC5983MA------------------------
-----------------------MAGNETOMERTER-----------------------
-*/
-
-// Function to write a single byte to MMC5983MA's internal register
-bool mmc5983ma_register_write(uint8_t register_address, uint8_t value) {
-  ret_code_t err_code;
-  uint8_t tx_buf[MMC5983MA_ADDRESS_LEN + 1];
-  
-  // Write the register address and data into transmit buffer
-  tx_buf[0] = register_address;
-  tx_buf[1] = value;
-  
-  // Set the flag to false to show the transmission is not yet completed
-  m_xfer_done = false;
-  
-  // Transmit the data over TWI Bus
-  err_code = nrf_drv_twi_tx(&m_twi, MMC5983MA_ADDRESS, tx_buf, MMC5983MA_ADDRESS_LEN + 1, false);
-  APP_ERROR_CHECK(err_code);
-  
-  // Wait until the transmission of the data is finished
-  while (m_xfer_done == false) {
-  }
-  
-  // If there is no error then return true else return false
-  if (NRF_SUCCESS != err_code) {
-    return false;
-  }
-  
-  return true;
-}
-  
-// Function to read data from the MMC5983MA
-bool mmc5983ma_register_read(uint8_t register_address, uint8_t *destination, uint8_t number_of_bytes) {
-  ret_code_t err_code;
-  
-  // Set the flag to false to show receiving is not yet completed
-  m_xfer_done = false;
-  
-  // Send the register address where we want to write the data
-  err_code = nrf_drv_twi_tx(&m_twi, MMC5983MA_ADDRESS, &register_address, 1, true);
-  APP_ERROR_CHECK(err_code);
-  
-  // Wait for the transmission to get completed
-  while (m_xfer_done == false) {
-  }
-  
-  // If transmission was not successful, exit the function with false as return value
-  if (NRF_SUCCESS != err_code) {
-    return false;
-  }
-    
-  nrf_delay_us(1);
-  // Set the flag again so that we can read data from the MMC5983MA's internal register
-  m_xfer_done = false;
-  
-  // Receive the data from the MMC5983MA
-  err_code = nrf_drv_twi_rx(&m_twi, MMC5983MA_ADDRESS, destination, number_of_bytes);
-  APP_ERROR_CHECK(err_code);
-  
-  // Wait until the transmission is completed
-  while (m_xfer_done == false) {
-  }
-  
-  // If data was successfully read, return true else return false
-  if (NRF_SUCCESS != err_code) {
-    return false;
-  }
-  
-  return true;
-}
-  
-// Function to verify the product ID
-bool mmc5983ma_verify_product_id(void) {
-  uint8_t who_am_i; // Create a variable to hold the who_am_i value
-  
-  if (mmc5983ma_register_read(MMC5983MA_PRODUCT_ID, &who_am_i, 1)) {
-    if (who_am_i != MMC5983MA_ADDRESS) {
-      return false;
+    if (nrf_drv_spi_init(&spi_mmc, &spi_config_mmc, NULL, NULL) == NRF_SUCCESS) {
+        NRF_LOG_INFO("SPI_C Initialized for MMC5983MA");
     } else {
-        return true;
-      }
-  } else {
-      return false;
+        NRF_LOG_ERROR("SPI_C Initialization Failed");
     }
+
+    if (nrf_drv_spi_init(&spi_gyro, &spi_config_gyro, NULL, NULL) == NRF_SUCCESS) {
+        NRF_LOG_INFO("SPI_B Initialized for ITG-3701 & ADIS16266");
+    } else {
+        NRF_LOG_ERROR("SPI_B Initialization Failed");
+    }
+
+    spi_initialized = true;
 }
-  
-// Function to initialize the MMC5983MA
+
+
+// SPI Read & Write Functions
+static bool spi_write_register(const nrf_drv_spi_t *spi_instance, uint8_t cs_pin, uint8_t reg, uint8_t value) {
+    // Write a single byte (value) to a register (reg)
+    uint8_t tx_data[2] = {reg, value};
+    nrf_gpio_pin_clear(cs_pin);
+    bool success = (nrf_drv_spi_transfer(spi_instance, tx_data, 2, NULL, 0) == NRF_SUCCESS);
+    nrf_gpio_pin_set(cs_pin);
+    return success;
+}
+
+static uint8_t spi_read_register(const nrf_drv_spi_t *spi_instance, uint8_t cs_pin, uint8_t reg) {
+    // Send a read command to request register data and return the received byte
+    uint8_t tx_data[2] = {reg | 0x80, 0x00}; // Read command (MSB = 1)
+    uint8_t rx_data[2];
+    nrf_gpio_pin_clear(cs_pin);
+    bool success = (nrf_drv_spi_transfer(spi_instance, tx_data, 2, rx_data, 2) == NRF_SUCCESS);
+    nrf_gpio_pin_set(cs_pin);
+    return success ? rx_data[1] : 0;
+}
+
+
+/* ---------------------------------------------- ADXL314 -------------------------------------------------------------------*/
+/*
+void adxl314_enable_interrupt(void) {
+    // Configure INT1 (P0.17) as input for Data Ready interrupt
+    nrf_gpio_cfg_input(17, NRF_GPIO_PIN_NOPULL);
+
+    // Enable Data Ready Interrupt in ADXL314
+    spi_write_register(&spi_adxl, ADXL314_CS_PIN, ADXL314_INT_MAP, 0x00);  // Map Data Ready to INT1
+    spi_write_register(&spi_adxl, ADXL314_CS_PIN, ADXL314_INT_ENABLE, 0x80);  // Enable Data Ready Interrupt
+
+    // Configure GPIOTE for interrupt handling
+    nrf_drv_gpiote_in_config_t config = GPIOTE_CONFIG_IN_SENSE_LOTOHI(true);
+    config.pull = NRF_GPIO_PIN_NOPULL;
+    nrf_drv_gpiote_in_init(17, &config, adxl314_data_ready_handler);
+    nrf_drv_gpiote_in_event_enable(17, true);
+}
+*/
+//// Define ISR that runs automatically when ADXL314 signals new data is ready
+//void adxl314_data_ready_handler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action) {
+//    int16_t acc_values[3];
+//    if (adxl314_read_accel(acc_values)) {
+//        NRF_LOG_INFO("Accel: X=%d Y=%d Z=%d", acc_values[0], acc_values[1], acc_values[2]);
+//    }
+//}
+
+bool adxl314_data_ready(void) {
+    uint8_t status = spi_read_register(&spi_adxl, ADXL314_CS_PIN, ADXL314_INT_SOURCE);
+    return (status & 0x80) != 0;  // Check if DATA_READY bit (Bit 7) is set
+}
+
+// ADXL314 Accelerometer Initialization
+bool adxl314_init(void) {
+    // Ensure SPI is initialized
+    if (!spi_initialized) sensors_init();
+
+    // Check that ADXL314 is detected
+    uint8_t dev_id = spi_read_register(&spi_adxl, ADXL314_CS_PIN, ADXL314_DEVID_REG);
+    if (dev_id != 0xE5) {  // Expected ID for ADXL314
+        NRF_LOG_ERROR("ADXL314 not detected! ID: 0x%X", dev_id);
+        return false;
+    }
+
+    // Set ODR to 1600 Hz (BW_RATE = 0x0E)
+    spi_write_register(&spi_adxl, ADXL314_CS_PIN, ADXL314_BW_RATE, 0x0E);
+
+    // Configure data format: 4-wire SPI, Full Resolution, Right Justified
+    spi_write_register(&spi_adxl, ADXL314_CS_PIN, ADXL314_DATA_FORMAT, 0x0B); 
+    
+    // Enable measurement mode (POWER_CTL = 0x08)
+    spi_write_register(&spi_adxl, ADXL314_CS_PIN, ADXL314_POWER_CTL, 0x08);
+
+    // Configure INT1 (Pin P0.13) as input for Data Ready interrupt
+    nrf_gpio_cfg_input(13, NRF_GPIO_PIN_NOPULL);
+
+    // Map Data Ready Interrupt to INT1
+    spi_write_register(&spi_adxl, ADXL314_CS_PIN, ADXL314_INT_MAP, 0x00);  // Set bit D7 = 0
+
+    // Enable Data Ready Interrupt
+    spi_write_register(&spi_adxl, ADXL314_CS_PIN, ADXL314_INT_ENABLE, 0x80);  // Set bit D7 = 1
+
+    //// Configure GPIOTE to handle interrupt:
+
+    //if (!nrf_drv_gpiote_is_init()) {
+    //    nrf_drv_gpiote_init();  // Initialize GPIOTE module
+    //}
+
+    //// Configure GPIO for interrupt detection on INT1 (P0.13)
+    //nrf_drv_gpiote_in_config_t config = GPIOTE_CONFIG_IN_SENSE_LOTOHI(true); // Active high 
+    //config.pull = NRF_GPIO_PIN_NOPULL;
+
+    //nrf_drv_gpiote_in_init(13, &config, adxl314_data_ready_handler); // Links the interrupt to data ready handler
+    //nrf_drv_gpiote_in_event_enable(13, true); // Enables the interrupt event on P0.13
+    
+    NRF_LOG_INFO("ADXL314 Initialized with ODR 1600 Hz, 4-wire SPI");
+    return true;
+
+}
+
+bool adxl314_read_accel(int16_t *acc_values) {
+    // Wait for new data
+    if (!adxl314_data_ready()) {
+        return false;  // No new data available, avoid reading old data
+    }
+
+    uint8_t tx_data = ADXL314_DATAX0 | 0xC0;  // Set MB bit (0x40) for multi-byte read
+    uint8_t rx_data[6];
+    nrf_gpio_pin_clear(ADXL314_CS_PIN); // Select ADXL314
+    bool success = (nrf_drv_spi_transfer(&spi_adxl, &tx_data, 1, rx_data, 6) == NRF_SUCCESS);
+    nrf_gpio_pin_set(ADXL314_CS_PIN); // Deselect ADXL314
+    if (success) {
+        // Combine MSB and LSB for 16-bit acceleration values
+        acc_values[0] = (rx_data[1] << 8) | rx_data[0]; // X-axis
+        acc_values[1] = (rx_data[3] << 8) | rx_data[2]; // Y-axis
+        acc_values[2] = (rx_data[5] << 8) | rx_data[4]; // Z-axis
+    }
+    return success;
+}
+
+/* ---------------------------------------------- MMC5983MA -------------------------------------------------------------------*/
+// MMC5983MA Magnetometer
+
+//// Define ISR that runs automatically when magnetometer signals new data is ready
+//void mmc5983ma_data_ready_handler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action) {
+//    int32_t mag_values[3];
+//    if (mmc5983ma_read_mag(mag_values)) {
+//        NRF_LOG_INFO("Magnetometer: X=%d Y=%d Z=%d", mag_values[0], mag_values[1], mag_values[2]);
+//    }
+//}
+
+bool mmc5983ma_data_ready(void) {
+    uint8_t status = spi_read_register(&spi_mmc, MMC5983MA_CS_PIN, MMC5983MA_STATUS);
+    return (status & 0x01) != 0;  // Bit 0 = DATA_RDY
+}
+
 bool mmc5983ma_init(void) {
-  bool transfer_succeeded = true;
-  
-  // Check the ID to confirm that we are communicating with the right device
-  transfer_succeeded &= mmc5983ma_verify_product_id();
-  
-  // enable auto set/reset (bit 5 == 1)
-  // this set/reset is a low current sensor offset measurement for normal use
-  (void)mmc5983ma_register_write(MMC5983MA_CONTROL_0, 1 << 5);
-  // set magnetometer bandwidth
-  (void)mmc5983ma_register_write(MMC5983MA_CONTROL_1, MBW_800Hz);  
-  // enable continuous measurement mode (bit 3 == 1), set sample rate
-  // enable automatic Set/Reset (bit 7 == 1), set set/reset rate
-  // this set/reset is a high-current "deGaussing" that should be used only to recover from 
-  // high magnetic field detuning of the magnetoresistive film
-  (void)mmc5983ma_register_write(MMC5983MA_CONTROL_2, 0 << 3 | MODR_ONESHOT);
-  return transfer_succeeded;
-}
-  
-// Read the mag values from the MMC5983MA's internal registers
-bool MMC5983MA_ReadMag(uint8_t *p_mag) {
-  bool ret = false;
+    // Ensure SPI is initialized
+    if (!spi_initialized) sensors_init();
+
+    // Check that MMC5983MA is detected
+    uint8_t dev_id = spi_read_register(&spi_mmc, MMC5983MA_CS_PIN, MMC5983MA_PRODUCT_ID);
+    if (dev_id != 0x30) {  // Expected ID for MMC5983MA
+        NRF_LOG_ERROR("MMC5983MA not detected! ID: 0x%X", dev_id);
+        return false;
+    }
+
+    // Configure INT1 (Pin P0.25) as input for Data Ready interrupt
+    nrf_gpio_cfg_input(25, NRF_GPIO_PIN_NOPULL);
+
+    spi_write_register(&spi_mmc, MMC5983MA_CS_PIN, MMC5983MA_CTRL_0, 0x28); // Enable auto set/reset & enable data ready interrupt
+    spi_write_register(&spi_mmc, MMC5983MA_CS_PIN, MMC5983MA_CTRL_1, 0x03); // Set BW to 800 Hz (BW = 11)
+    spi_write_register(&spi_mmc, MMC5983MA_CS_PIN, MMC5983MA_CTRL_2, 0x0F); // Set ODR to 1000 Hz & enable continuous measurement mode
+
+    //// Configure nRF GPIO for interrupt handling:
+
+    //if (!nrf_drv_gpiote_is_init()) {
+    //    nrf_drv_gpiote_init();  // Initialize GPIOTE module if not already done
+    //}
+
+    //// Configure GPIO for interrupt detection on MMC5983MA INT pin (P0.25)
+    //nrf_drv_gpiote_in_config_t config = GPIOTE_CONFIG_IN_SENSE_LOTOHI(true); // Active high
+    //config.pull = NRF_GPIO_PIN_NOPULL;
+
+    //nrf_drv_gpiote_in_init(25, &config, mmc5983ma_data_ready_handler); // Link the interrupt to data ready handler
+    //nrf_drv_gpiote_in_event_enable(25, true); // Enable the interrupt event on P0.25
     
-  (void)mmc5983ma_register_write(MMC5983MA_CONTROL_0, 1 << 0);
-  if (mmc5983ma_register_read(MMC5983MA_MAG_OUT, p_mag, 7) == true) {
-    ret = true;
-  }
-  
-  return ret;
+    NRF_LOG_INFO("MMC5983MA Initialized with ODR 1000 Hz");
+    return true;
 }
 
+bool mmc5983ma_read_mag(int8_t *mag_values) {
+    if (!mmc5983ma_data_ready()) return false;  // Polling method
 
-/*
--------------------------ADIS16266BCCZ_AF-------------------------
-----------------------HIGH RATE Z-AXIS GYRO-----------------------
-*/
+    uint8_t tx_data = MMC5983MA_XOUT0 | 0xC0;  // Enable multi-byte read
+    uint8_t rx_data[7];  // Read XOUT0 to XYZOUT2
 
-// Function to write a 16-bit value to a register
-void adis16266_write_register(uint8_t reg, uint16_t value) {
-  uint8_t tx_data[4] = { (reg | ADIS16266_WRITE), (value >> 8), reg, (value & 0xFF) };
-  spi_transfer(ADIS16266_CS_PIN, tx_data, 4, NULL, 0);
+    nrf_gpio_pin_clear(MMC5983MA_CS_PIN); // Select MMC5983MA
+    bool success = (nrf_drv_spi_transfer(&spi_mmc, &tx_data, 1, rx_data, 7) == NRF_SUCCESS);
+    nrf_gpio_pin_set(MMC5983MA_CS_PIN); // Deselect MMC5983MA
+
+    if (success) {
+        //// Extract 18-bit data for each axis
+        //mag_values[0] = (rx_data[0] << 10) | (rx_data[1] << 2) | ((rx_data[6] >> 6) & 0x03);  // X-axis
+        //mag_values[1] = (rx_data[2] << 10) | (rx_data[3] << 2) | ((rx_data[6] >> 4) & 0x03);  // Y-axis
+        //mag_values[2] = (rx_data[4] << 10) | (rx_data[5] << 2) | ((rx_data[6] >> 2) & 0x03);  // Z-axis
+
+        mag_values[0] = rx_data[0];
+        mag_values[1] = rx_data[1];
+        mag_values[2] = rx_data[2];
+        mag_values[3] = rx_data[3];
+        mag_values[4] = rx_data[4];
+        mag_values[5] = rx_data[5];
+        mag_values[6] = rx_data[6];
+    }
+
+    return success;
 }
-  
-// Function to read a 16-bit value from a register
-uint16_t adis16266_read_register(uint8_t reg) {
-  uint8_t tx_data[2] = { reg, 0x00 };
-  uint8_t rx_data[2] = {0};
-  
-  spi_transfer(ADIS16266_CS_PIN, tx_data, 2, rx_data, 2);
-  return (rx_data[0] << 8) | rx_data[1]; // Combine high and low bytes
+
+/* ---------------------------------------------- ITG-3701 -------------------------------------------------------------------*/
+// ITG-3701 Gyroscope
+
+//// Define the ISR that runs automatically when data ready interrupt is triggered
+//void itg3701_data_ready_handler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action) {
+//    int16_t gyro_values[3];
+//    if (itg3701_read_gyro(gyro_values)) {
+//        NRF_LOG_INFO("Gyro: X=%d Y=%d Z=%d", gyro_values[0], gyro_values[1], gyro_values[2]);
+//    }
+//}
+
+bool itg3701_data_ready(void) {
+    uint8_t int_status = spi_read_register(&spi_gyro, ITG3701_CS_PIN, ITG3701_INT_STATUS);
+    return (int_status & 0x01) != 0;  // Bit 0 = DATA_RDY
 }
+
+bool itg3701_init(void) {
+    // Ensure SPI is initialized
+    if (!spi_initialized) sensors_init();
+
+    // Verify WHO_AM_I register
+    uint8_t dev_id = spi_read_register(&spi_gyro, ITG3701_CS_PIN, ITG3701_WHO_AM_I);
+    if (dev_id != 0x68) {  // Expected ID for ITG-3701
+        NRF_LOG_ERROR("ITG-3701 not detected! ID: 0x%X", dev_id);
+        return false;
+    }
+
+    // Wake up the sensor (disable sleep mode)
+    spi_write_register(&spi_gyro, ITG3701_CS_PIN, ITG3701_PWR_MGMT_1, 0x01);  // Clock source = PLL
+
+    // Set full-scale range to ±4000 DPS (FS_SEL = 3)
+    spi_write_register(&spi_gyro, ITG3701_CS_PIN, ITG3701_GYRO_CONFIG, 0x18);  // FS_SEL[1:0] = 11 (±4000 DPS)
+
+    // Configure Digital Low Pass Filter (DLPF) and sample rate
+    spi_write_register(&spi_gyro, ITG3701_CS_PIN, ITG3701_CONFIG, 0x03);  // DLPF_CFG = 3 (41 Hz Bandwidth)
+    spi_write_register(&spi_gyro, ITG3701_CS_PIN, ITG3701_SMPLRT_DIV, 0x03);  // Sample Rate = Gyro Output Rate (1 kHz) / (1 + 3) = 250 Hz
+
+    // Configure INT1 (Pin P0.15) as input for Data Ready interrupt
+    nrf_gpio_cfg_input(15, NRF_GPIO_PIN_NOPULL);
+
+    spi_write_register(&spi_gyro, ITG3701_CS_PIN, ITG3701_INT_PIN_CFG, 0x00); // Configure active high interrupt & INT pin as push-pull
+    spi_write_register(&spi_gyro, ITG3701_CS_PIN, ITG3701_INT_ENABLE, 0x01); // Set bit 0 to 1 to enable data ready interrupt
+
+    //// Configure nRF GPIO for interrupt handling
+
+    //if (!nrf_drv_gpiote_is_init()) {
+    //    nrf_drv_gpiote_init();  // Initialize GPIOTE module if not already initialized
+    //}
+
+    //// Configure GPIO P0.15 to detect rising edge (INT pin of ITG-3701)
+    //nrf_drv_gpiote_in_config_t config = GPIOTE_CONFIG_IN_SENSE_LOTOHI(true); // Active high
+    //config.pull = NRF_GPIO_PIN_NOPULL;
+
+    //nrf_drv_gpiote_in_init(15, &config, itg3701_data_ready_handler); // Link the interrupt to data ready handler
+    //nrf_drv_gpiote_in_event_enable(15, true); // Enable the interrupt event on P0.15
   
-// Function to read gyroscope data (angular rate)
-int16_t adis16266_read_gyro(void) {
-  return (int16_t)adis16266_read_register(ADIS16266_GYRO_OUT);
+    NRF_LOG_INFO("ITG-3701 Initialized with ±4000 DPS full scale");
+    return true;
 }
-  
-// Function to initialize ADIS16266
-void adis16266_init() {
-  uint16_t prod_id = adis16266_read_register(ADIS16266_PROD_ID);
-  if (prod_id != 0x6206) {
-      printf("Error: Incorrect ADIS16266 Product ID: 0x%X\n", prod_id);
-      return;
-  }
-  
-  // Set sample period (default: 819.2 SPS)
-  adis16266_write_register(ADIS16266_SMPL_PRD, 0x0001);
-  
-  // Set sensitivity/averaging control
-  adis16266_write_register(ADIS16266_SENS_AVG, 0x0400);
-  
-  // Enable gyroscope operation
-  adis16266_write_register(ADIS16266_POWER_CTRL, 0x0001);
-  
-  printf("ADIS16266 Initialized!\n");
+
+bool itg3701_read_gyro(int16_t *gyro_values) {
+    if (!itg3701_data_ready()) return false;  // Polling method
+
+    uint8_t tx_data = ITG3701_GYRO_XOUT_H | 0x80;  // Set read bit (MSB = 1), supports auto-increment for burst read
+    uint8_t rx_data[6];
+
+    nrf_gpio_pin_clear(ITG3701_CS_PIN); // Select ITG-3701
+    bool success = (nrf_drv_spi_transfer(&spi_gyro, &tx_data, 1, rx_data, 6) == NRF_SUCCESS);
+    nrf_gpio_pin_set(ITG3701_CS_PIN); // Deselect ITG-3701
+
+    if (success) {
+        // Combine MSB and LSB to form 16-bit values
+        gyro_values[0] = (rx_data[0] << 8) | rx_data[1];  // X-axis
+        gyro_values[1] = (rx_data[2] << 8) | rx_data[3];  // Y-axis
+        gyro_values[2] = (rx_data[4] << 8) | rx_data[5];  // Z-axis
+    }
+
+    return success;
+}
+
+/* ---------------------------------------------- ADIS16266 -------------------------------------------------------------------*/
+// ADIS16266 High-Rate Gyroscope
+
+//// Define ISR that runs automatically when data ready interrupt is triggered
+//void adis16266_data_ready_handler(nrf_drv_gpiote_pin_t pin, nrf_gpiote_polarity_t action) {
+//  int16_t high_gyro_values[4];
+//    if (adis16266_read_gyro(high_gyro_values)) {
+//        NRF_LOG_INFO("Gyro: High Z=%d", high_gyro_values[3]);
+//    }
+//}
+
+bool adis16266_verify_prod_id(void) {
+    // Read from PROD_ID register
+    uint8_t tx_data[2] = {ADIS16266_PROD_ID, 0x00}; // Read command (MSB = 0)
+    uint8_t rx_data[2];
+    uint16_t dev_id;
+    nrf_gpio_pin_clear(ADIS16266_CS_PIN);
+    bool success = (nrf_drv_spi_transfer(&spi_gyro, tx_data, 2, rx_data, 2) == NRF_SUCCESS);
+    nrf_gpio_pin_set(ADIS16266_CS_PIN);
+    if (success) dev_id = (rx_data[1] << 8) | rx_data[0]; // Combine MSB and LSB to form 16-bit data
+
+    // Verify PROD_ID = 0x3F8A
+    if (dev_id != 0x3F8A) {  
+        NRF_LOG_ERROR("ADIS16266 not detected! ID: 0x%X", dev_id);
+        return false;
+    }
+
+    return true; // dev_id = 0x3F8A
+}
+
+bool adis16266_init(void) {
+    // Ensure SPI is initialized
+    if (!spi_initialized) sensors_init();
+
+    // Exit if device not identified
+    if (!adis16266_verify_prod_id()) return false;
+
+    // 16-bit SPI command format: R/W bit (1), 7-bit register address, 8-bit data
+
+    // spi_write_register(&spi_gyro, ADIS16266_CS_PIN, ADIS16266_GYRO_SCALE, 0x0800); // multiply gyro output by 1 (no scale factor)
+
+    // Set Sample Rate to Maximum (2429 Hz), (SMPL_PRD[3:0] = 0000)
+    spi_write_register(&spi_gyro, ADIS16266_CS_PIN, 0xB6, 0x00); // Write low byte (0x00) to address 0x36 with MSB = 1 (write)
+
+    // Set Filter & Sensitivity: 2-tap filter (SENS_AVG[2:0] = 001), ±14,000 DPS (SENS_AVG[10:8] = 100), (SENS_AVG = 0x0401)
+    spi_write_register(&spi_gyro, ADIS16266_CS_PIN, 0xB9, 0x04); // Write high byte (0x04) to address 0x39 with MSB = 1 (write)
+    spi_write_register(&spi_gyro, ADIS16266_CS_PIN, 0xB8, 0x01); // Write low byte (0x01) to address 0x38 with MSB = 1 (write)
+
+    // Configure INT1 (Pin P0.17) as input for Data Ready interrupt
+    nrf_gpio_cfg_input(17, NRF_GPIO_PIN_NOPULL);
+
+    // Configure DIO1 as output and DIO2 as output set to high (GPIO_CTRL = 0x0203)
+    spi_write_register(&spi_gyro, ADIS16266_CS_PIN, 0xB3, 0x02); // Write higher byte (0x02) to address 0x33 with MSB = 1 (write)
+    spi_write_register(&spi_gyro, ADIS16266_CS_PIN, 0xB2, 0x03); // Write lower byte (0x03) to address 0x32 with MSB = 1 (write)
+
+    // Enable Data Ready Interrupt (DIO1 as Data Ready, active high) (MSC_CTRL[2:0] = 110)
+    spi_write_register(&spi_gyro, ADIS16266_CS_PIN, 0xB4, 0x06); // Write lower byte (0x04) to address 0x34 with MSB = 1 (write)
+
+    // Save Settings to Flash Memory (GLOB_CMD[3] = 1)
+    spi_write_register(&spi_gyro, ADIS16266_CS_PIN, 0xBE, 0x08); // Write lower byte (0x08) to address 0x3E with MSB = 1 (write)
+    nrf_delay_ms(50);  // Wait for flash write
+
+    //// Set up a GPIOTE interrupt to handle the Data Ready signal:
+
+    //if (!nrf_drv_gpiote_is_init()) {
+    //    nrf_drv_gpiote_init();  // Initialize GPIOTE module if not already initialized
+    //}
+
+    //nrf_drv_gpiote_in_config_t config = GPIOTE_CONFIG_IN_SENSE_LOTOHI(true); // Active high
+    //config.pull = NRF_GPIO_PIN_NOPULL;
+
+    //nrf_drv_gpiote_in_init(17, &config, adis16266_data_ready_handler); // Link the interrupt to data ready handler
+    //nrf_drv_gpiote_in_event_enable(17, true); // Enable the interrupt event on P0.17
+
+    NRF_LOG_INFO("ADIS16266 Initialized with ±14,000 DPS and max ODR.");
+    return true;
+}
+
+bool adis16266_read_gyro(int16_t *gyro_values) {
+    // Read from GYRO_OUT register
+    uint8_t tx_data[2] = {ADIS16266_GYRO_OUT, 0x00}; // Read command (MSB = 0)
+    uint8_t rx_data[2];
+    nrf_gpio_pin_clear(ADIS16266_CS_PIN);
+    bool success = (nrf_drv_spi_transfer(&spi_gyro, tx_data, 2, rx_data, 2) == NRF_SUCCESS);
+    nrf_gpio_pin_set(ADIS16266_CS_PIN);
+    
+    uint8_t unread_data = (rx_data[1] & 0x10); // Check MSB 
+    if (unread_data != 0x10) return false;  // ND bit = 0
+
+    if (success) {
+        // Combine MSB and LSB to form 16-bit values
+        gyro_values[3] = ((rx_data[1] & 0x3F) << 8) | rx_data[0];  // Clear bits 15:14
+    }
+
+    return success;
+
 }
